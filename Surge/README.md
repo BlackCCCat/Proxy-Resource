@@ -33,6 +33,9 @@ Loon 的视频 Tag 深度过滤需要额外查询 Tag，可能在响应阶段增
 
 模块直接引用本仓库 `Surge/scripts/` 中的脚本，无需另外添加脚本。启用前请确认 Surge 的 HTTPS 解密与证书信任已配置。不要同时启用 Sparkle 原模块；BiliUniverse ADBlock 和 Global 也有重叠接口，需避免重复脚本规则。详细的 Surge 模块行为见[官方文档](https://manual.nssurge.com/profile/module.html)。
 
+### 注意事项
+由于Surge多个模块非常容易冲突，导致Surge自动重启且模块无法正常生效，因此才做了合并版，建议关闭其他哔哩哔哩模块（BiliUniverse已测试不冲突可正常使用），并把该脚本置于模块生效列表的最底部
+
 ### 上游与致谢
 
 - [kokoryh/Sparkle](https://github.com/kokoryh/Sparkle)：原 Surge 模块、广告和播放相关脚本。基线提交 `d513a2eeab382c640ccd5d6ecd76e07c4828b1ed`；保留 [GPL-3.0 许可证](LICENSE.Sparkle)及可重建的[源码补丁](sources/sparkle-keyword.patch)。
