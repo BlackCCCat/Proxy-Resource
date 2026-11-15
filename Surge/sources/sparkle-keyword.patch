@@ -1,0 +1,578 @@
+diff --git a/src/script/bilibili/json/handler.ts b/src/script/bilibili/json/handler.ts
+index 7aae4d8..64bcc2e 100644
+--- a/src/script/bilibili/json/handler.ts
++++ b/src/script/bilibili/json/handler.ts
+@@ -14,6 +14,16 @@ import {
+     LiveUserInfo,
+ } from './types';
+ import { Middleware } from './middleware';
++import { KeywordConfig, matchesVideo, parseKeywordConfig } from '../keyword';
++
++function blockedFeedItem(value: unknown, config: KeywordConfig): boolean {
++    if (!config.titleKeywords.length && !config.blockedUps.length) return false;
++    const item = value as Record<string, any>;
++    const titles = [item.title, item.player_args?.title, item.part];
++    const upNames = [item.args?.up_name, item.desc_button?.text, item.owner?.name, item.name];
++    return titles.some(title => matchesVideo(title, undefined, config)) ||
++        upNames.some(up => matchesVideo(undefined, up, config));
++}
+ 
+ function patchValue<T extends object, P extends object>(target: T | T[], patch: P): void {
+     const keys = Object.keys(patch);
+@@ -61,6 +71,7 @@ export const handleSplash: Middleware<Splash> = (ctx, next) => {
+ 
+ export const handleFeedIndex: Middleware<FeedIndex> = (ctx, next) => {
+     const { data } = ctx.state.message;
++    const keywords = parseKeywordConfig(ctx.argument);
+ 
+     if (Array.isArray(data.items)) {
+         const includeTypes = [CardType.SMALL_COVER_V2, CardType.LARGE_COVER_SINGLE_V9, CardType.LARGE_COVER_V1];
+@@ -69,7 +80,8 @@ export const handleFeedIndex: Middleware<FeedIndex> = (ctx, next) => {
+                 !item.banner_item && // remove banner
+                 !item.ad_info &&
+                 item.card_goto === GotoType.AV &&
+-                includeTypes.includes(item.card_type)
++                includeTypes.includes(item.card_type) &&
++                !blockedFeedItem(item, keywords)
+             );
+         });
+     }
+@@ -79,11 +91,13 @@ export const handleFeedIndex: Middleware<FeedIndex> = (ctx, next) => {
+ 
+ export const handleFeedIndexStory: Middleware<FeedIndexStory> = (ctx, next) => {
+     const { data } = ctx.state.message;
++    const keywords = parseKeywordConfig(ctx.argument);
+ 
+     if (Array.isArray(data.items)) {
+         const excludeTypes = [GotoType.VERTICAL_AD_AV, GotoType.VERTICAL_AD_LIVE, GotoType.VERTICAL_AD_PICTURE];
+         data.items = data.items.filter(item => {
+-            if (!item.ad_info && item.card_goto && !excludeTypes.includes(item.card_goto)) {
++            if (!item.ad_info && item.card_goto && !excludeTypes.includes(item.card_goto) &&
++                !blockedFeedItem(item, keywords)) {
+                 item.story_cart_icon = undefined;
+                 item.free_flow_toast = undefined;
+                 item.image_infos = undefined;
+diff --git a/src/script/bilibili/json/middleware.ts b/src/script/bilibili/json/middleware.ts
+index ce7b006..1a930a7 100644
+--- a/src/script/bilibili/json/middleware.ts
++++ b/src/script/bilibili/json/middleware.ts
+@@ -4,6 +4,8 @@ import { I18n, loadI18n } from '../locale';
+ 
+ export interface Argument {
+     showCreatorHub: boolean | number;
++    titleKeywords?: string;
++    blockedUps?: string;
+ }
+ 
+ export interface State<T> {
+diff --git a/src/script/bilibili/json/router.ts b/src/script/bilibili/json/router.ts
+index 9039401..7285741 100644
+--- a/src/script/bilibili/json/router.ts
++++ b/src/script/bilibili/json/router.ts
+@@ -18,8 +18,8 @@ const router = new Router({
+ 
+ router.get('/show/tab/v2', setupI18n, handleLayout);
+ router.get(['/splash/list', '/splash/show', '/splash/event/list2'], handleSplash);
+-router.get('/feed/index', handleFeedIndex);
+-router.get('/feed/index/story', handleFeedIndexStory);
++router.get('/feed/index', setupArgument, handleFeedIndex);
++router.get('/feed/index/story', setupArgument, handleFeedIndexStory);
+ router.get(['/account/mine', '/account/mine/ipad'], setupArgument, setupI18n, handleAccountMine);
+ router.get('/account/myinfo', handleAccountMyInfo);
+ router.get('/index/feed', handleLiveFeedInfo);
+diff --git a/src/script/bilibili/keyword.ts b/src/script/bilibili/keyword.ts
+new file mode 100644
+index 0000000..2366399
+--- /dev/null
++++ b/src/script/bilibili/keyword.ts
+@@ -0,0 +1,36 @@
++/** Keyword rules ported from ElyDemiurge/Loon-Plugins/bilibili.
++ * Keep matching local and synchronous on response hot paths.
++ */
++export interface KeywordConfig {
++    titleKeywords: string[];
++    blockedUps: string[];
++    dynamicKeywords: string[];
++    searchResultKeywords: string[];
++}
++
++function parseTerms(value: unknown): string[] {
++    if (typeof value !== 'string') return [];
++    return [...new Set(value.split(/[,|;，；\n\r]+/).map(part => part.trim().toLocaleLowerCase()).filter(Boolean))];
++}
++
++export function parseKeywordConfig(argument: unknown): KeywordConfig {
++    const input = argument && typeof argument === 'object' ? argument as Record<string, unknown> : {};
++    return {
++        titleKeywords: parseTerms(input.titleKeywords),
++        blockedUps: parseTerms(input.blockedUps).map(up => up.replace(/^(up主|频道)[:：]/i, '').replace(/\s+/g, ' ').trim()),
++        dynamicKeywords: parseTerms(input.dynamicKeywords),
++        searchResultKeywords: parseTerms(input.searchResultKeywords),
++    };
++}
++
++export function containsKeyword(value: unknown, keywords: string[]): boolean {
++    return typeof value === 'string' && keywords.length > 0 &&
++        keywords.some(keyword => value.toLocaleLowerCase().includes(keyword));
++}
++
++export function matchesVideo(title: unknown, up: unknown, config: KeywordConfig): boolean {
++    if (containsKeyword(title, config.titleKeywords)) return true;
++    if (typeof up !== 'string' || !config.blockedUps.length) return false;
++    const normalized = up.replace(/^(UP主|频道)[:：]/, '').replace(/\s+/g, ' ').trim().toLocaleLowerCase();
++    return config.blockedUps.includes(normalized);
++}
+diff --git a/src/script/bilibili/protobuf/handler.ts b/src/script/bilibili/protobuf/handler.ts
+index 8137b3b..84e87dd 100644
+--- a/src/script/bilibili/protobuf/handler.ts
++++ b/src/script/bilibili/protobuf/handler.ts
+@@ -36,10 +36,15 @@ import { fetchSkipSegments } from '@service/sponsor-block.service';
+ import { getDevice, toBvid, ungzip } from '@/utils';
+ import { Middleware, State } from './middleware';
+ import { createMergedPoints, parseSegments } from './utils';
++import { parseKeywordConfig } from '../keyword';
++import {
++    filterDynamic, filterIpadRelatesFeed, filterIpadView, filterPopular,
++    filterRelatesFeed, filterSearch, filterSuggest, filterView,
++} from './keyword-filter';
+ 
+ export const handleDynAllReply: Middleware = (ctx, next) => {
+     const { displayUpList } = ctx.argument;
+-    const message = DynAllReply.fromBinary(ctx.response.bodyBytes);
++    const message = DynAllReply.fromBinary(filterDynamic(ctx.response.bodyBytes, parseKeywordConfig(ctx.argument)));
+     message.topicList = undefined;
+     if (message.dynamicList) {
+         const excludeTypes = [DynamicType.AD, DynamicType.LIVE_RCMD];
+@@ -99,7 +104,7 @@ export const handlePlayViewReply: Middleware = (ctx, next) => {
+ };
+ 
+ export const handlePopularReply: Middleware = (ctx, next) => {
+-    const message = PopularReply.fromBinary(ctx.response.bodyBytes);
++    const message = PopularReply.fromBinary(filterPopular(ctx.response.bodyBytes, parseKeywordConfig(ctx.argument)));
+     const excludeTypes = ['rcmdOneItem', 'smallCoverV5Ad', 'topicList'];
+     message.items = message.items.filter(item => {
+         if (item.item.oneofKind === 'smallCoverV5') {
+@@ -113,7 +118,7 @@ export const handlePopularReply: Middleware = (ctx, next) => {
+ };
+ 
+ export const handleIpadViewReply: Middleware = (ctx, next) => {
+-    const message = IpadViewReply.fromBinary(ctx.response.bodyBytes);
++    const message = IpadViewReply.fromBinary(filterIpadView(ctx.response.bodyBytes, parseKeywordConfig(ctx.argument)));
+     message.label = undefined;
+     message.cmIpad = undefined;
+     message.cmConfig = undefined;
+@@ -143,7 +148,7 @@ export const handleIpadViewProgressReply: Middleware = (ctx, next) => {
+ };
+ 
+ export const handleIpadRelatesFeedReply: Middleware = (ctx, next) => {
+-    const message = IpadRelatesFeedReply.fromBinary(ctx.response.bodyBytes);
++    const message = IpadRelatesFeedReply.fromBinary(filterIpadRelatesFeed(ctx.response.bodyBytes, parseKeywordConfig(ctx.argument)));
+     message.list = message.list.filter(item => !item.cm.length);
+     ctx.response.bodyBytes = IpadRelatesFeedReply.toBinary(message);
+     return next();
+@@ -223,14 +228,14 @@ function getChronosMd5Map(): Record<string, string> {
+ }
+ 
+ export const handleRelatesFeedReply: Middleware = (ctx, next) => {
+-    const message = RelatesFeedReply.fromBinary(ctx.response.bodyBytes);
++    const message = RelatesFeedReply.fromBinary(filterRelatesFeed(ctx.response.bodyBytes, parseKeywordConfig(ctx.argument)));
+     message.relates = handleRelateCard(message.relates);
+     ctx.response.bodyBytes = RelatesFeedReply.toBinary(message);
+     return next();
+ };
+ 
+ export const handleViewReply: Middleware = (ctx, next) => {
+-    const message = ViewReply.fromBinary(ctx.response.bodyBytes);
++    const message = ViewReply.fromBinary(filterView(ctx.response.bodyBytes, parseKeywordConfig(ctx.argument)));
+     message.cm = undefined;
+     if (message.reqUser) message.reqUser.elecPlusBtn = undefined;
+     message.tab?.tabModule.forEach(tabModule => {
+@@ -242,7 +247,7 @@ export const handleViewReply: Middleware = (ctx, next) => {
+ };
+ 
+ export const handleAIRelateAsyncReply: Middleware = (ctx, next) => {
+-    const message = AIRelateAsyncReply.fromBinary(ctx.response.bodyBytes);
++    const message = AIRelateAsyncReply.fromBinary(filterView(ctx.response.bodyBytes, parseKeywordConfig(ctx.argument)));
+     message.cm = undefined;
+     if (message.module) {
+         message.module.modules = handleViewModules(message.module.modules);
+@@ -331,13 +336,18 @@ export const handleIpadPlayViewReply: Middleware = (ctx, next) => {
+ };
+ 
+ export const handleSearchAllResponse: Middleware = (ctx, next) => {
+-    const message = SearchAllResponse.fromBinary(ctx.response.bodyBytes);
++    const message = SearchAllResponse.fromBinary(filterSearch(ctx.response.bodyBytes, parseKeywordConfig(ctx.argument)));
+     const excludePattern = /_ad_?/;
+     message.item = message.item.filter(item => !excludePattern.test(item.linktype));
+     ctx.response.bodyBytes = SearchAllResponse.toBinary(message);
+     return next();
+ };
+ 
++export const handleSearchSuggestResponse: Middleware = (ctx, next) => {
++    ctx.response.bodyBytes = filterSuggest(ctx.response.bodyBytes, parseKeywordConfig(ctx.argument));
++    return next();
++};
++
+ export const fetchUpstream: Middleware = async (ctx, next) => {
+     await fetchBilibili(ctx);
+     return next();
+diff --git a/src/script/bilibili/protobuf/keyword-filter.ts b/src/script/bilibili/protobuf/keyword-filter.ts
+new file mode 100644
+index 0000000..267a156
+--- /dev/null
++++ b/src/script/bilibili/protobuf/keyword-filter.ts
+@@ -0,0 +1,278 @@
++import { containsKeyword, KeywordConfig, matchesVideo } from '../keyword';
++
++interface Field {
++    no: number;
++    wire: number;
++    value: Uint8Array;
++    raw: Uint8Array;
++}
++
++const decoder = new TextDecoder('utf-8', { fatal: true });
++
++function varint(bytes: Uint8Array, start: number): [number, number] | null {
++    let value = 0;
++    let multiplier = 1;
++    for (let i = start; i < bytes.length && i < start + 10; i++) {
++        const byte = bytes[i];
++        value += (byte & 0x7f) * multiplier;
++        if (!Number.isSafeInteger(value)) return null;
++        if (!(byte & 0x80)) return [value, i + 1];
++        multiplier *= 128;
++    }
++    return null;
++}
++
++function fields(bytes: Uint8Array): Field[] | null {
++    const result: Field[] = [];
++    for (let offset = 0; offset < bytes.length;) {
++        const start = offset;
++        const tag = varint(bytes, offset);
++        if (!tag) return null;
++        const no = Math.floor(tag[0] / 8);
++        const wire = tag[0] % 8;
++        if (!no || no > 536870911) return null;
++        offset = tag[1];
++        let valueStart = offset;
++        let end = offset;
++        if (wire === 0) {
++            const value = varint(bytes, offset);
++            if (!value) return null;
++            end = value[1];
++        } else if (wire === 1) {
++            end = offset + 8;
++        } else if (wire === 2) {
++            const length = varint(bytes, offset);
++            if (!length) return null;
++            valueStart = length[1];
++            end = valueStart + length[0];
++        } else if (wire === 5) {
++            end = offset + 4;
++        } else {
++            return null;
++        }
++        if (end > bytes.length) return null;
++        result.push({ no, wire, value: bytes.subarray(valueStart, end), raw: bytes.subarray(start, end) });
++        offset = end;
++    }
++    return result;
++}
++
++function text(bytes: Uint8Array): string {
++    if (!bytes.length || bytes.length > 2048) return '';
++    try {
++        const value = decoder.decode(bytes).replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
++        return /[\x00-\x1f\ufffd]/.test(value) ? '' : value;
++    } catch {
++        return '';
++    }
++}
++
++function strings(message: Uint8Array, no: number): string[] {
++    return (fields(message) || []).filter(field => field.no === no && field.wire === 2)
++        .map(field => text(field.value)).filter(Boolean);
++}
++
++function nested(message: Uint8Array, no: number): Uint8Array | undefined {
++    return fields(message)?.find(field => field.no === no && field.wire === 2)?.value;
++}
++
++function textEntries(message: Uint8Array, maxDepth = 8): { path: string; value: string }[] {
++    const result: { path: string; value: string }[] = [];
++    function walk(bytes: Uint8Array, path: number[], depth: number): void {
++        if (depth > maxDepth) return;
++        const parsed = fields(bytes);
++        if (!parsed) return;
++        for (const field of parsed) {
++            if (field.wire !== 2 || !field.value.length) continue;
++            const nextPath = [...path, field.no];
++            const value = text(field.value);
++            if (value) result.push({ path: nextPath.join('.'), value });
++            if (depth < maxDepth && field.value.length > 2) walk(field.value, nextPath, depth + 1);
++        }
++    }
++    walk(message, [], 0);
++    return result;
++}
++
++function combine(chunks: Uint8Array[]): Uint8Array {
++    const size = chunks.reduce((sum, bytes) => sum + bytes.length, 0);
++    const result = new Uint8Array(size);
++    let offset = 0;
++    for (const bytes of chunks) {
++        result.set(bytes, offset);
++        offset += bytes.length;
++    }
++    return result;
++}
++
++function encodedVarint(value: number): Uint8Array {
++    const output: number[] = [];
++    do {
++        let byte = value % 128;
++        value = Math.floor(value / 128);
++        if (value) byte |= 0x80;
++        output.push(byte);
++    } while (value);
++    return Uint8Array.from(output);
++}
++
++function replaceField(field: Field, value: Uint8Array): Uint8Array {
++    return combine([encodedVarint(field.no * 8 + 2), encodedVarint(value.length), value]);
++}
++
++function filterRepeated(message: Uint8Array, no: number, remove: (value: Uint8Array) => boolean): Uint8Array {
++    const parsed = fields(message);
++    if (!parsed) return message;
++    const chunks: Uint8Array[] = [];
++    let changed = false;
++    for (const field of parsed) {
++        if (field.no === no && field.wire === 2 && remove(field.value)) {
++            changed = true;
++        } else {
++            chunks.push(field.raw);
++        }
++    }
++    return changed ? combine(chunks) : message;
++}
++
++function firstPath(entries: { path: string; value: string }[], paths: string[]): string {
++    for (const path of paths) {
++        const value = entries.find(entry => entry.path === path || entry.path.endsWith(`.${path}`))?.value;
++        if (value) return value;
++    }
++    return '';
++}
++
++function firstReadable(entries: { path: string; value: string }[]): string {
++    return entries.find(entry => entry.value.length <= 120 &&
++        !/^(?:https?:|bilibili:|UP主[:：]|[\d\s·]+$)/i.test(entry.value))?.value || '';
++}
++
++function popularMatches(card: Uint8Array, config: KeywordConfig): boolean {
++    const cover = nested(card, 1);
++    if (!cover) return false;
++    const base = nested(cover, 1);
++    const titles = base ? strings(base, 6) : [];
++    const ups = strings(cover, 5);
++    const share = base ? (fields(base) || []).filter(field => field.no === 18 && field.wire === 2) : [];
++    for (const section of share) {
++        for (const item of (fields(section.value) || []).filter(field => field.no === 1 && field.wire === 2)) {
++            titles.push(...strings(item.value, 1));
++            ups.push(...strings(item.value, 8));
++        }
++    }
++    return titles.some(title => matchesVideo(title, '', config)) || ups.some(up => matchesVideo('', up, config));
++}
++
++export function filterPopular(message: Uint8Array, config: KeywordConfig): Uint8Array {
++    if (!config.titleKeywords.length && !config.blockedUps.length) return message;
++    return filterRepeated(message, 1, card => popularMatches(card, config));
++}
++
++export function filterDynamic(message: Uint8Array, config: KeywordConfig): Uint8Array {
++    if (!config.dynamicKeywords.length) return message;
++    const parsed = fields(message);
++    if (!parsed) return message;
++    let changed = false;
++    const chunks = parsed.map(field => {
++        if (field.no !== 1 || field.wire !== 2) return field.raw;
++        const next = filterRepeated(field.value, 1, item =>
++            textEntries(item).some(entry => containsKeyword(entry.value, config.dynamicKeywords)));
++        if (next === field.value) return field.raw;
++        changed = true;
++        return replaceField(field, next);
++    });
++    return changed ? combine(chunks) : message;
++}
++
++function relatedMatches(card: Uint8Array, config: KeywordConfig): boolean {
++    const entries = textEntries(card);
++    const title = firstReadable(entries);
++    const ups = entries.filter(entry => entry.path.endsWith('12.11.3'))
++        .map(entry => entry.value);
++    for (const entry of entries) {
++        const match = entry.value.match(/^UP主[:：]\s*(.+)$/);
++        if (match) ups.push(match[1]);
++    }
++    return matchesVideo(title, '', config) || ups.some(up => matchesVideo('', up, config));
++}
++
++export function filterRelatesFeed(message: Uint8Array, config: KeywordConfig): Uint8Array {
++    if (!config.titleKeywords.length && !config.blockedUps.length) return message;
++    return filterRepeated(message, 1, card => relatedMatches(card, config));
++}
++
++export function filterView(message: Uint8Array, config: KeywordConfig): Uint8Array {
++    if (!config.titleKeywords.length && !config.blockedUps.length) return message;
++    function walk(bytes: Uint8Array, path: number[], depth: number): Uint8Array {
++        if (depth > 12) return bytes;
++        const parsed = fields(bytes);
++        if (!parsed) return bytes;
++        let changed = false;
++        const chunks: Uint8Array[] = [];
++        const isRelates = path.join('.') === '5.1.2.2.22' || path.join('.') === '2.1.22';
++        for (const field of parsed) {
++            if (field.wire !== 2 || !field.value.length) {
++                chunks.push(field.raw);
++                continue;
++            }
++            if (isRelates && field.no === 1 && relatedMatches(field.value, config)) {
++                changed = true;
++                continue;
++            }
++            const next = walk(field.value, [...path, field.no], depth + 1);
++            if (next !== field.value) changed = true;
++            chunks.push(next === field.value ? field.raw : replaceField(field, next));
++        }
++        return changed ? combine(chunks) : bytes;
++    }
++    return walk(message, [], 0);
++}
++
++function ipadRelatedMatches(card: Uint8Array, config: KeywordConfig): boolean {
++    const titles = strings(card, 3);
++    const owner = nested(card, 4);
++    const ups = owner ? strings(owner, 2) : [];
++    return titles.some(title => matchesVideo(title, '', config)) || ups.some(up => matchesVideo('', up, config));
++}
++
++export function filterIpadView(message: Uint8Array, config: KeywordConfig): Uint8Array {
++    if (!config.titleKeywords.length && !config.blockedUps.length) return message;
++    return filterRepeated(message, 10, card => ipadRelatedMatches(card, config));
++}
++
++export function filterIpadRelatesFeed(message: Uint8Array, config: KeywordConfig): Uint8Array {
++    if (!config.titleKeywords.length && !config.blockedUps.length) return message;
++    return filterRepeated(message, 1, card => ipadRelatedMatches(card, config));
++}
++
++function searchMatches(item: Uint8Array, config: KeywordConfig): boolean {
++    const entries = textEntries(item);
++    // Match the same readable Chinese text scope as the Loon SearchAll handler.
++    if (entries.some(entry => /[\u4e00-\u9fff]/.test(entry.value) &&
++        !/[\x00-\x08\x0e-\x1f\ufffd]/.test(entry.value) &&
++        containsKeyword(entry.value, config.searchResultKeywords))) return true;
++    if (!config.titleKeywords.length && !config.blockedUps.length) return false;
++    const types = [...strings(item, 2), ...strings(item, 3), ...strings(item, 4)];
++    const metadata = strings(item, 63);
++    for (const value of metadata) {
++        try { types.push(String((JSON.parse(value) as { type?: string }).type || '')); } catch { /* Ignore malformed metadata. */ }
++    }
++    const isVideo = types.some(type => /^(?:video|av)$/i.test(type));
++    const title = isVideo ? firstPath(entries, ['37.1', '42.1', '10.1', '52.2.1', '23.14.2', '23.1', '23.8', '44.2.1', '23.21.1']) : '';
++    const ups = entries.filter(entry => ['37.10', '23.1', '23.14', '23.14.2', '23.32']
++        .some(path => entry.path === path || entry.path.endsWith(`.${path}`)))
++        .map(entry => entry.value);
++    return matchesVideo(title, '', config) || ups.some(up => matchesVideo('', up, config));
++}
++
++export function filterSearch(message: Uint8Array, config: KeywordConfig): Uint8Array {
++    if (!config.searchResultKeywords.length && !config.titleKeywords.length && !config.blockedUps.length) return message;
++    return filterRepeated(message, 4, item => searchMatches(item, config));
++}
++
++export function filterSuggest(message: Uint8Array, config: KeywordConfig): Uint8Array {
++    if (!config.searchResultKeywords.length) return message;
++    return filterRepeated(message, 2, suggestion => textEntries(suggestion, 4)
++        .some(entry => containsKeyword(entry.value, config.searchResultKeywords)));
++}
+diff --git a/src/script/bilibili/protobuf/response/app.ts b/src/script/bilibili/protobuf/response/app.ts
+index 3e4c02a..ae42f8b 100644
+--- a/src/script/bilibili/protobuf/response/app.ts
++++ b/src/script/bilibili/protobuf/response/app.ts
+@@ -1,10 +1,10 @@
+ import { Application } from '@core/application';
+ import { doneResponse, transformGrpcResponse } from '@core/middleware';
+-import { fixResponseHeaders } from '../middleware';
++import { fixResponseHeaders, setupArgument } from '../middleware';
+ import { router } from './router';
+ 
+ const app = new Application();
+ 
+-app.use(doneResponse).use(fixResponseHeaders).use(transformGrpcResponse).use(router.routes()).use(router.notFound());
++app.use(doneResponse).use(fixResponseHeaders).use(setupArgument).use(transformGrpcResponse).use(router.routes()).use(router.notFound());
+ 
+ export { app };
+diff --git a/src/script/bilibili/protobuf/response/router.ts b/src/script/bilibili/protobuf/response/router.ts
+index 6ff4476..9cb6f32 100644
+--- a/src/script/bilibili/protobuf/response/router.ts
++++ b/src/script/bilibili/protobuf/response/router.ts
+@@ -1,5 +1,5 @@
+ import { matchUrlSuffix, Router } from '@core/router';
+-import { parseUserAgent, setupArgument } from '../middleware';
++import { parseUserAgent } from '../middleware';
+ import {
+     handleDynAllReply,
+     handlePlayViewUniteReply,
+@@ -16,6 +16,7 @@ import {
+     handleMainListReply,
+     handleIpadPlayViewReply,
+     handleSearchAllResponse,
++    handleSearchSuggestResponse,
+ } from '../handler';
+ // import { handleDefaultWordsReply, handleModeStatusReply, handleTFInfoReply } from '../deprecated-handler';
+ 
+@@ -23,21 +24,22 @@ const router = new Router({
+     matchPath: matchUrlSuffix,
+ });
+ 
+-router.post('v2.Dynamic/DynAll', setupArgument, handleDynAllReply);
++router.post('v2.Dynamic/DynAll', handleDynAllReply);
+ router.post('playerunite.v1.Player/PlayViewUnite', handlePlayViewUniteReply);
+ router.post('playurl.v1.PlayURL/PlayView', handlePlayViewReply);
+ router.post('v1.Popular/Index', handlePopularReply);
+ router.post('view.v1.View/View', handleIpadViewReply);
+-router.post('view.v1.View/ViewProgress', setupArgument, parseUserAgent, handleIpadViewProgressReply);
++router.post('view.v1.View/ViewProgress', parseUserAgent, handleIpadViewProgressReply);
+ router.post('view.v1.View/RelatesFeed', handleIpadRelatesFeedReply);
+-router.post('viewunite.v1.View/ViewProgress', setupArgument, parseUserAgent, handleViewProgressReply);
++router.post('viewunite.v1.View/ViewProgress', parseUserAgent, handleViewProgressReply);
+ router.post('viewunite.v1.View/RelatesFeed', handleRelatesFeedReply);
+ router.post('viewunite.v1.View/View', handleViewReply);
+ router.post('viewunite.v1.View/AIRelateAsync', handleAIRelateAsyncReply);
+ router.post('v1.DM/DmView', handleDmViewReply);
+-router.post('v1.Reply/MainList', setupArgument, handleMainListReply);
++router.post('v1.Reply/MainList', handleMainListReply);
+ router.post('v2.PlayURL/PlayView', handleIpadPlayViewReply);
+ router.post('v1.Search/SearchAll', handleSearchAllResponse);
++router.post('v1.Search/Suggest3', handleSearchSuggestResponse);
+ 
+ // router.post('v1.Search/DefaultWords', handleDefaultWordsReply);
+ // router.post('v1.Teenagers/ModeStatus', handleModeStatusReply);
+diff --git a/src/utils/index.ts b/src/utils/index.ts
+index 14b12ce..9c8ead3 100644
+--- a/src/utils/index.ts
++++ b/src/utils/index.ts
+@@ -1,7 +1,7 @@
+ // import { gunzipSync } from 'fflate';
+ 
+ export { assert } from './assert';
+-export { toAvid, toBvid, createMergedPoints } from './bilibili';
++export { toAvid, toBvid } from './bilibili';
+ export { toArrayBuffer, toUint8Array, isUint8Array } from './binary';
+ 
+ export function createCaseInsensitiveDictionary<T extends object>(

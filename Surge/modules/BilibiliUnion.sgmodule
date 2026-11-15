@@ -1,0 +1,49 @@
+#!name=哔哩哔哩增强·关键词融合
+#!desc=保留哔哩哔哩增强功能，加入标题、创作者、动态和搜索关键词屏蔽
+#!category=📺 BiliBili
+#!url=https://raw.githubusercontent.com/BlackCCCat/Proxy-Resource/main/Surge/modules/BilibiliUnion.sgmodule
+#!author=kokoryh；关键词移植自 ElyDemiurge/Loon-Plugins
+#!homepage=https://github.com/BlackCCCat/Proxy-Resource
+#!arguments=动态最常访问:auto,创作中心:0,过滤置顶评论广告:1,优化评论区加载:bilibili.protobuf.request,空降助手:bilibili.airborne,空降助手策略:DIRECT,屏蔽点对点:DEST-PORT,日志等级:4,视频标题词:"",屏蔽创作者:"",动态内容词:"",搜索内容词:""
+#!arguments-desc=动态最常访问：auto 仅有直播时显示，show 始终显示，hide 隐藏。\n创作中心：0 隐藏，1 显示。过滤置顶评论广告：0 关闭，1 开启。\n优化评论区加载、空降助手、屏蔽点对点：将参数值改为 # 可关闭。\n空降助手策略：填写已有策略名称，默认 DIRECT。日志等级：1 调试、2 信息、3 警告、4 错误、5 关闭。\n视频标题词：标题包含任一词即屏蔽。屏蔽创作者：创作者名称完整匹配。\n动态内容词：按动态内容屏蔽。搜索内容词：按搜索结果及联想词屏蔽。\n多个词用英文逗号、竖线或分号分隔；请勿输入英文双引号或直接换行。
+
+[Rule]
+DOMAIN,bsbsb.top,{{{空降助手策略}}}
+DOMAIN,dns.google,REJECT,pre-matching
+DOMAIN,api.biliapi.com,REJECT,pre-matching,extended-matching
+DOMAIN,app.biliapi.com,REJECT,pre-matching,extended-matching
+DOMAIN,api.biliapi.net,REJECT,pre-matching,extended-matching
+DOMAIN,app.biliapi.net,REJECT,pre-matching,extended-matching
+AND,((DOMAIN-SUFFIX,chat.bilibili.com), (OR,((DOMAIN-KEYWORD,stun), (DOMAIN-KEYWORD,tracker), (DOMAIN-KEYWORD,p2p)))),REJECT,pre-matching
+{{{屏蔽点对点}}},4480,REJECT-NO-DROP,pre-matching
+{{{屏蔽点对点}}},4483,REJECT-NO-DROP,pre-matching
+{{{屏蔽点对点}}},9102,REJECT-NO-DROP,pre-matching
+
+[Map Local]
+^https:\/\/app\.bilibili\.com\/x\/v2\/splash\/list\? header="content-type: application/json" data-type=text data="{"code":0,"message":"OK","ttl":1,"data":{"max_time":0,"min_interval":31536000,"pull_interval":31536000,"keep_ids":[],"show":[],"list":[{}],"splash_request_id":""}}"
+^https:\/\/ap[ip]\.bilibili\.com\/x\/(?:resource\/(?:top\/activity|patch\/tab(?:\/v2)?)|v2\/search\/square|vip\/ads\/materials)\? header="content-type: application/json" data-type=text data="{"code":-404,"message":"-404","ttl":1,"data":null}"
+^https:\/\/api\.bilibili\.com\/pgc\/activity\/deliver\/material\/receive\? header="content-type: application/json" data-type=text data="{"code":0,"data":{"closeType":"close_win","container":[],"showTime":""},"message":"success"}"
+^https:\/\/api\.live\.bilibili\.com\/xlive\/e-commerce-interface\/v1\/ecommerce-user\/get_shopping_info\? header="content-type: application/json" data-type=text data="{}"
+^https:\/\/line3-h5-mobile-api\.biligame\.com\/game\/live\/large_card_material\? header="content-type: application/json" data-type=text data="{"code":0,"message":"success"}"
+^https:\/\/grpc\.biliapi\.net\/bilibili\.app\.interface\.v1\.Teenagers\/ModeStatus$ header="content-type: application/grpc|grpc-status: 0" data-type=base64 data="AAAAABMKEQgCEgl0ZWVuYWdlcnMgAioA"
+^https:\/\/grpc\.biliapi\.net\/bilibili\.app\.interface\.v1\.Search\/DefaultWords$ header="content-type: application/grpc|grpc-status: 0" data-type=base64 data="AAAAACEaHeaQnOe0ouinhumikeOAgeeVquWJp+aIlnVw5Li7KAE="
+^https:\/\/grpc\.biliapi\.net\/bilibili\.app\.(?:view\.v1\.View\/TFInfo|viewunite\.v1\.View\/(?:PlayPause|ViewEndPage))$ header="content-type: application/grpc|grpc-status: 0" data-type=base64 data="AAAAAAA="
+
+[Body Rewrite]
+http-response-jq ^http:\/\/[^?]+\/resolve\?host=(?:ap[ip]\.bilibili\.com|grpc\.biliapi\.net|api\.live\.bilibili\.com) '.dns[]? |= (.ips = [] | .ttl = 86400)'
+http-response-jq ^https:\/\/api\.live\.bilibili\.com\/xlive\/open-interface\/v2\/tracker\/conf\? '.data.domains = ["wss://tracker.chat.bilibili.com"]'
+http-response-jq ^https:\/\/api\.bilibili\.com\/x\/pd-proxy\/tracker\? '.data[][]? = "stun.chat.bilibili.com:3478"'
+http-response-jq ^https:\/\/api\.bilibili\.com\/pgc\/view\/v2\/app\/season\? 'del(.data.payment)'
+http-response-jq ^https:\/\/api\.bilibili\.com\/pgc\/page\/channel\? '.data.modules |= map(select(.type != "TIP") | if .type == "BANNER" then .module_data.items |= map(select(.url | startswith("https://www.bilibili.com/blackboard/era/") | not)) else . end)'
+
+[Script]
+{{{优化评论区加载}}} = type=http-request,pattern=^https:\/\/(?:grpc\.biliapi\.net|app\.bilibili\.com)\/bilibili\.(?:app\.viewunite\.v1\.View\/View|main\.community\.reply\.v1\.Reply\/MainList)$,argument="{\"purifyComment\":{{{过滤置顶评论广告}}},\"logLevel\":\"{{{日志等级}}}\"}",requires-body=1,binary-body-mode=1,max-size=1048576,engine=webview,timeout=10,script-path=https://raw.githubusercontent.com/BlackCCCat/Proxy-Resource/main/Surge/scripts/bilibili.protobuf.request.js
+{{{空降助手}}} = type=http-request,pattern=^https:\/\/(?:grpc\.biliapi\.net|app\.bilibili\.com)\/bilibili\.(?:community\.service\.dm\.v1\.DM\/DmSegMobile|app\.view(?:unite)?\.v1\.View\/ViewProgress)$,argument="{\"logLevel\":\"{{{日志等级}}}\"}",requires-body=1,binary-body-mode=1,max-size=1048576,engine=webview,timeout=10,script-path=https://raw.githubusercontent.com/BlackCCCat/Proxy-Resource/main/Surge/scripts/bilibili.protobuf.request.js
+bilibili.skin = type=http-response,pattern=^https:\/\/app\.bilibili\.com\/x\/resource\/show\/skin\?,requires-body=1,max-size=1048576,engine=webview,script-path=https://raw.githubusercontent.com/BlackCCCat/Proxy-Resource/main/Surge/scripts/bili-suit-diy.js
+bilibili.json = type=http-response,pattern=^https:\/\/app\.bilibili\.com\/x\/(?:resource\/show\/tab\/v2|v2\/(?:splash\/(?:show|event\/list2)|feed\/index(?:\/story)?|account\/(?:mine(?:\/ipad)?|myinfo)))\?,argument="{\"showCreatorHub\":{{{创作中心}}},\"titleKeywords\":\"{{{视频标题词}}}\",\"blockedUps\":\"{{{屏蔽创作者}}}\"}",requires-body=1,max-size=1048576,engine=webview,script-path=https://raw.githubusercontent.com/BlackCCCat/Proxy-Resource/main/Surge/scripts/bilibili.json.js
+bilibili.live = type=http-response,pattern=^https:\/\/api\.live\.bilibili\.com\/xlive\/(?:app-interface\/v2\/index\/feed|app-room\/v1\/index\/getInfoBy(?:Room|User))\?,requires-body=1,max-size=1048576,engine=webview,script-path=https://raw.githubusercontent.com/BlackCCCat/Proxy-Resource/main/Surge/scripts/bilibili.json.js
+bilibili.webpage = type=http-response,pattern=^https:\/\/www\.bilibili\.com\/blackboard\/era\/[^?]+\.html\?,requires-body=1,max-size=1048576,engine=webview,script-path=https://raw.githubusercontent.com/BlackCCCat/Proxy-Resource/main/Surge/scripts/webpage.bilibili.js
+bilibili.protobuf.response = type=http-response,pattern=^https:\/\/(?:grpc\.biliapi\.net|app\.bilibili\.com)\/bilibili\.(?:app\.(?:show\.v1\.Popular\/Index|dynamic\.v2\.Dynamic\/DynAll|view(?:unite)?\.v1\.View\/(?:View|ViewProgress|RelatesFeed|AIRelateAsync)|playurl\.v1\.PlayURL\/PlayView|playerunite\.v1\.Player\/PlayViewUnite)|polymer\.app\.search\.v1\.Search\/SearchAll|app\.interface\.v1\.Search\/Suggest3|community\.service\.dm\.v1\.DM\/DmView|main\.community\.reply\.v1\.Reply\/MainList|pgc\.gateway\.player\.v2\.PlayURL\/PlayView)$,argument="{\"displayUpList\":\"{{{动态最常访问}}}\",\"purifyComment\":{{{过滤置顶评论广告}}},\"sponsorBlock\":\"{{{空降助手}}}\",\"logLevel\":\"{{{日志等级}}}\",\"titleKeywords\":\"{{{视频标题词}}}\",\"blockedUps\":\"{{{屏蔽创作者}}}\",\"dynamicKeywords\":\"{{{动态内容词}}}\",\"searchResultKeywords\":\"{{{搜索内容词}}}\"}",requires-body=1,binary-body-mode=1,max-size=1048576,engine=webview,script-path=https://raw.githubusercontent.com/BlackCCCat/Proxy-Resource/main/Surge/scripts/bilibili.protobuf.response.js
+
+[MITM]
+hostname = %APPEND% grpc.biliapi.net, app.bilibili.com, api.bilibili.com, api.live.bilibili.com, www.bilibili.com, line3-h5-mobile-api.biligame.com
