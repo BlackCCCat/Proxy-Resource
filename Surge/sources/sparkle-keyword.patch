@@ -218,10 +218,10 @@ index 8137b3b..84e87dd 100644
      return next();
 diff --git a/src/script/bilibili/protobuf/keyword-filter.ts b/src/script/bilibili/protobuf/keyword-filter.ts
 new file mode 100644
-index 0000000..267a156
+index 0000000..683aebb
 --- /dev/null
 +++ b/src/script/bilibili/protobuf/keyword-filter.ts
-@@ -0,0 +1,278 @@
+@@ -0,0 +1,280 @@
 +import { containsKeyword, KeywordConfig, matchesVideo } from '../keyword';
 +
 +interface Field {
@@ -232,6 +232,7 @@ index 0000000..267a156
 +}
 +
 +const decoder = new TextDecoder('utf-8', { fatal: true });
++const looseDecoder = new TextDecoder('utf-8');
 +
 +function varint(bytes: Uint8Array, start: number): [number, number] | null {
 +    let value = 0;
@@ -401,7 +402,8 @@ index 0000000..267a156
 +    const chunks = parsed.map(field => {
 +        if (field.no !== 1 || field.wire !== 2) return field.raw;
 +        const next = filterRepeated(field.value, 1, item =>
-+            textEntries(item).some(entry => containsKeyword(entry.value, config.dynamicKeywords)));
++            textEntries(item).some(entry => containsKeyword(entry.value, config.dynamicKeywords)) ||
++            (item.length > 2048 && containsKeyword(looseDecoder.decode(item), config.dynamicKeywords)));
 +        if (next === field.value) return field.raw;
 +        changed = true;
 +        return replaceField(field, next);
